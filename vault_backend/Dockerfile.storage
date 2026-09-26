@@ -1,0 +1,14 @@
+# ── Vault Storage Node — Docker blueprint ─────────────────────────────────
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+COPY src/ ./src/
+
+RUN pip install --no-cache-dir .
+
+VOLUME ["/data"]
+EXPOSE 8001
+
+CMD ["python", "-m", "vault.daemon_main", "--port", "8001", "--data-dir", "/data"]

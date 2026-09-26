@@ -1,0 +1,65 @@
+# ──────────────────────────────────────────────────────────────────────────
+# Vault v0.1-beta — Docker Compose
+#
+# Spins up:
+#   1x Coordinator API Gateway  (port 8000)
+#   3x Storage Node Daemons     (ports 8001-8003)
+#
+# Usage:
+#   docker compose up --build
+# ──────────────────────────────────────────────────────────────────────────
+version: "3.8"
+
+services:
+  # ── Coordinator ───────────────────────────────────────────────────────
+  coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile.coordinator
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./vault_metadata.db
+      - 'STORAGE_NODES=["http://storage-node-1:8001","http://storage-node-2:8001","http://storage-node-3:8001"]'
+      - REPLICATION_FACTOR=3
+      - HEARTBEAT_INTERVAL_SECONDS=5
+    depends_on:
+      - storage-node-1
+      - storage-node-2
+      - storage-node-3
+
+  # ── Storage nodes ─────────────────────────────────────────────────────
+  storage-node-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.storage
+    ports:
+      - "8001:8001"
+    command: ["python", "-m", "vault.daemon_main", "--port", "8001", "--data-dir", "/data"]
+    volumes:
+      - storage-1-data:/data
+
+  storage-node-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.storage
+    ports:
+      - "8002:8001"
+    command: ["python", "-m", "vault.daemon_main", "--port", "8001", "--data-dir", "/data"]
+    volumes:
+      - storage-2-data:/data
+
+  storage-node-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.storage
+    ports:
+      - "8003:8001"
+    command: ["python", "-m", "vault.daemon_main", "--port", "8001", "--data-dir", "/data"]
+    volumes:
+      - storage-3-data:/data
+
+volumes:
+  storage-1-data:
+  storage-2-data:
+  storage-3-data:
