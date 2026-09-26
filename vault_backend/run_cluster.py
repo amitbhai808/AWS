@@ -1,115 +1,82 @@
-#!/usr/bin/env python3
-"""Vault v0.1-beta — Cluster Launcher.
-
-Spawns N storage-node daemons, the coordinator API gateway, and monitors
-for graceful shutdown on ``SIGINT`` / ``SIGTERM``.
-
-Usage::
-
-    python run_cluster.py
-"""
-
-from __future__ import annotations
-
 import os
 import signal
 import subprocess
 import sys
 import time
-from pathlib import Path
 
+def kill_ports(ports):
+    """Clean up any old processes clinging to cluster ports."""
+    for port in ports:
+        try:
+            out = subprocess.check_output(["lsof", "-t", f"-i:{port}"], text=True).strip()
+            if out:
+                for pid_str in out.split():
+                    pid = int(pid_str)
+                    if pid != os.getpid():
+                        print(f"Cleaning up stale process {pid} on port {port}...")
+                        os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
 
-def main() -> None:
-    # Lazy-import so PYTHONPATH is already set when the module loads
-    src_dir = str(Path(__file__).resolve().parent / "src")
-    if src_dir not in sys.path:
-        sys.path.insert(0, src_dir)
+def main():
+    cluster_ports = [8000, 8001, 8002, 8003, 8004]
+    kill_ports(cluster_ports)
+    time.sleep(0.5)
 
-    from vault.core.config import get_settings
+    procs = []
 
-    settings = get_settings()
-    processes: list[subprocess.Popen] = []
-    base_dir = Path(__file__).resolve().parent
-
-    env = os.environ.copy()
-    env["PYTHONPATH"] = src_dir
-
-    print("=" * 64)
-    print("   Vault v0.1-beta — Distributed Object Storage Cluster")
-    print("=" * 64)
-
-    # ── 1. Storage nodes ──────────────────────────────────────────────
-    for port in settings.NODE_PORTS:
-        data_dir = base_dir / "data" / f"node_{port}"
-        data_dir.mkdir(parents=True, exist_ok=True)
-
-        cmd = [
-            sys.executable, "-m", "vault.daemon_main",
-            "--port", str(port),
-            "--data-dir", str(data_dir),
-        ]
-        print(f"   [LAUNCHER] Storage node  :{port}  →  {data_dir}")
-        proc = subprocess.Popen(cmd, env=env)
-        processes.append(proc)
-
-    # Brief pause so nodes bind their ports before the coordinator boots
-    time.sleep(1)
-
-    # ── 2. Coordinator gateway ────────────────────────────────────────
-    coord_cmd = [
-        sys.executable, "-m", "uvicorn",
-        "vault.coordinator_main:app",
-        "--host", "0.0.0.0",
-        "--port", str(settings.COORDINATOR_PORT),
-        "--log-level", "info",
-    ]
-    print(f"   [LAUNCHER] Coordinator   :{settings.COORDINATOR_PORT}")
-    coord_proc = subprocess.Popen(coord_cmd, env=env)
-    processes.append(coord_proc)
-
-    # ── Summary ───────────────────────────────────────────────────────
-    print()
-    print(f"   API Gateway : http://localhost:{settings.COORDINATOR_PORT}")
-    print(f"   API Docs    : http://localhost:{settings.COORDINATOR_PORT}/docs")
-    for port in settings.NODE_PORTS:
-        print(f"   Storage Node: http://localhost:{port}")
-    print()
-    print("   Press Ctrl+C to shut down the cluster.")
-    print("=" * 64)
-
-    # ── 3. Graceful shutdown handler ──────────────────────────────────
-    def shutdown(signum, frame):  # noqa: ARG001
-        print("\n   [LAUNCHER] Shutting down cluster …")
-        for proc in reversed(processes):
+    def shutdown(signum=None, frame=None):
+        print("\nShutting down cluster processes...")
+        for p in procs:
+            if p.poll() is None:
+                p.terminate()
+        for p in procs:
             try:
-                proc.terminate()
-            except OSError:
-                pass
-        for proc in processes:
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-        print("   [LAUNCHER] All processes terminated. Goodbye!")
+                p.wait(timeout=2)
+            except Exception:
+                p.kill()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    # ── 4. Keep alive & watch for unexpected exits ────────────────────
+    # 1. Start storage nodes
+    for i in range(1, 5):
+        port = 8000 + i
+        data_dir = f"./data/node{i}"
+        os.makedirs(data_dir, exist_ok=True)
+        p = subprocess.Popen([
+            sys.executable, "-m", "vault.daemon_main",
+            "--port", str(port),
+            "--data-dir", data_dir
+        ])
+        procs.append(p)
+
+    time.sleep(0.5)
+
+    # 2. Start coordinator
+    p_coord = subprocess.Popen([
+        sys.executable, "-m", "uvicorn",
+        "vault.coordinator_main:app",
+        "--port", "8000"
+    ])
+    procs.append(p_coord)
+
+    print("\n✅ Vault Cluster running successfully!")
+    print(" - Coordinator: http://localhost:8000")
+    print(" - Storage Nodes: http://localhost:8001 - 8004")
+    print("Press Ctrl+C to stop.\n")
+
     try:
         while True:
-            for i, proc in enumerate(processes):
-                rc = proc.poll()
-                if rc is not None:
-                    print(
-                        f"   [LAUNCHER] ⚠ Process {i} (PID {proc.pid}) "
-                        f"exited with code {rc}"
-                    )
-            time.sleep(2)
+            for p in procs:
+                if p.poll() is not None:
+                    # One process exited prematurely
+                    print(f"Process {p.args} exited with code {p.returncode}")
+                    shutdown()
+            time.sleep(1)
     except KeyboardInterrupt:
-        shutdown(None, None)
-
+        shutdown()
 
 if __name__ == "__main__":
     main()
